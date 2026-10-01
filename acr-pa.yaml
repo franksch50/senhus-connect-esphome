@@ -134,7 +134,7 @@ substitutions:
   uart_rx_pin: GPIO4
   # Overridable per device: set this in the device YAML's own
   # substitutions block to point at that room's temperature sensor.
-  room_temperature_sensor: sensor.temperatur_hobbyraum_temperatur
+  room_temperature_sensor: sensor.temperatur_waschkuche_temperatur
 
 text:
   - platform: template
