@@ -76,9 +76,12 @@ climate:
       name: Panasonic AC Mild Dry Switch
     current_power_consumption:
       name: Power Consumption
-    # current_temperature_sensor: temperature_sensor_id
+    current_temperature_sensor: temperature_sensor_id
 
 sensor:
+  - platform: homeassistant
+    id: temperature_sensor_id
+    entity_id: ${room_temperature_sensor}
   - platform: uptime
     name: ESP Uptime
     id: sys_uptime
@@ -129,6 +132,9 @@ button:
 substitutions:
   uart_tx_pin: GPIO3
   uart_rx_pin: GPIO4
+  # Overridable per device: set this in the device YAML's own
+  # substitutions block to point at that room's temperature sensor.
+  room_temperature_sensor: sensor.temperatur_hobbyraum_temperatur
 
 text:
   - platform: template
@@ -153,5 +159,5 @@ text:
     entity_category: config
 
 dashboard_import:
-  package_import_url: github://Senhus-DK/senhus-connect-esphome/acr-pa.yaml@main
+  package_import_url: github://franksch50/senhus-connect-esphome/acr-pa.yaml@main
   import_full_config: false
