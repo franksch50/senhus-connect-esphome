@@ -3,7 +3,7 @@ substitutions:
   uart_rx_pin: GPIO3
 
 packages:
-  acr_pa: github://franksch50/senhus-connect-esphome/acr-pa.yaml@27cb153e1e60ce6e5ac11752c38e2f78e0bc9566
+  acr_pa: github://franksch50/senhus-connect-esphome/acr-pa.yaml@main
 
 dashboard_import:
   package_import_url: github://franksch50/senhus-connect-esphome/acr-pa-v2.yaml@main

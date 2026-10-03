@@ -27,7 +27,7 @@ wifi:
     ssid: "SenhusConnect"
 
 logger:
-  level: VERY_VERBOSE
+  level: DEBUG
 
 api:
 
