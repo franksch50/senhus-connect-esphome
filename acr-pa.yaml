@@ -77,6 +77,7 @@ climate:
     current_power_consumption:
       name: Power Consumption
     current_temperature_sensor: temperature_sensor_id
+    current_temperature_offset: ${current_temperature_offset}
 
 sensor:
   - platform: homeassistant
@@ -135,6 +136,13 @@ substitutions:
   # Overridable per device: set this in the device YAML's own
   # substitutions block to point at that room's temperature sensor.
   room_temperature_sensor: sensor.temperatur_waschkuche_temperatur
+  # Overridable per device: shifts the target temperature actually sent
+  # to the physical AC (sent_to_ac = ha_target - offset), and shifts the
+  # displayed current_temperature by the same amount (current = sensor + offset).
+  # Positive = AC receives a LOWER real target than set in HA (stops heating sooner).
+  # Negative = AC receives a HIGHER real target than set in HA (keeps heating longer).
+  # Range: -15..15. Default 0 = no change in behaviour.
+  current_temperature_offset: 0
 
 text:
   - platform: template
