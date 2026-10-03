@@ -76,7 +76,12 @@ climate:
       name: Panasonic AC Mild Dry Switch
     current_power_consumption:
       name: Power Consumption
-    current_temperature_sensor: temperature_sensor_id
+    # TEMPORARILY DISABLED for diagnostics: with this unset, the component
+    # reads and exposes the AC's own internal intake-air sensor as
+    # current_temperature instead of the Waschküche override, so we can see
+    # what the internal sensor actually reports. Re-enable the line below
+    # once the comparison is done.
+    # current_temperature_sensor: temperature_sensor_id
     current_temperature_offset: ${current_temperature_offset}
 
 sensor:
