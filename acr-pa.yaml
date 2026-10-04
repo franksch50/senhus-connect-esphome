@@ -76,12 +76,14 @@ climate:
       name: Panasonic AC Mild Dry Switch
     current_power_consumption:
       name: Power Consumption
-    # TEMPORARILY DISABLED for diagnostics: with this unset, the component
-    # reads and exposes the AC's own internal intake-air sensor as
-    # current_temperature instead of the Waschküche override, so we can see
-    # what the internal sensor actually reports. Re-enable the line below
-    # once the comparison is done.
-    # current_temperature_sensor: temperature_sensor_id
+    # Diagnostics confirmed (2026-10-03/04): the AC's own internal
+    # intake-air sensor saturates from its own warm discharge air during
+    # sustained heating (observed ~32°C internal vs. ~19°C real room after
+    # ~20min at full power) — fully decoupled from this override, which
+    # only affects what HA displays/computes, never what's sent to the AC.
+    # current_temperature_offset biases the real UART target the AC
+    # receives (sent = ha_target - offset) to compensate.
+    current_temperature_sensor: temperature_sensor_id
     current_temperature_offset: ${current_temperature_offset}
 
 sensor:
