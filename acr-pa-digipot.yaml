@@ -1,0 +1,273 @@
+# DRAFT - not yet compiled or tested on hardware. Not referenced by any
+# other file, so it has no effect on existing devices.
+#
+# Optional add-on package for acr-pa.yaml / acr-pa-v2.yaml
+#
+# Replaces the AC's physical room-air thermistor (12k NTC, CN-TH "Suction
+# Temp. Sensor") with an X9C503 digital potentiometer (50k, 99 steps). The
+# digipot presents the resistance the NTC *would* have at the temperature of
+# a remote sensor (default: the Home Assistant room sensor), so the AC's own
+# control loop regulates against the real room temperature.
+#
+# Wiring (SOIC-8 pin numbers):
+#   X9C503 pin 1 INC   <- ${digipot_inc_pin}
+#   X9C503 pin 2 U/D   <- ${digipot_ud_pin}
+#   X9C503 pin 3 VH    -> one wire of the former thermistor cable
+#   X9C503 pin 4 VSS   -> GND (common with the AC board)
+#   X9C503 pin 5 VW    -> the other wire of the former thermistor cable
+#   X9C503 pin 6 VL    -> not connected
+#   X9C503 pin 7 CS    <- ${digipot_cs_pin}   (+ 10k pull-up to 3V3)
+#   X9C503 pin 8 VCC   -> 5V (4.5..5.5V required), 100nF to VSS close to the chip
+#
+# R(VW..VH) = r_wiper + (99 - position) * r_total / 99
+#   position 0  (after reference run) = ~50k  = about -4 degC ("cold": the AC
+#                                       heats, the safe direction)
+#   position 99                       = ~40 ohm = hot / short
+#
+# The wiper position is NEVER stored to the chip's non-volatile memory
+# (CS is only released while INC is low), so the 100k-store endurance limit
+# is not a concern for continuous operation.
+#
+# Use together with current_temperature_offset: "0" in the device YAML.
+
+substitutions:
+  digipot_cs_pin: GPIO5
+  digipot_inc_pin: GPIO6
+  digipot_ud_pin: GPIO7
+  digipot_r_total: "50000"
+  digipot_r_wiper: "40"
+  # Level on U/D that moves the wiper towards VH (resistance VW..VH falls).
+  # Verify on the bench with a multimeter (see "Digipot Test Position").
+  digipot_up_is_high: "true"
+  # Used at boot and when the source sensor stops reporting: cold = AC heats.
+  digipot_fallback_temp: "10.0"
+  digipot_sensor_timeout_min: "30"
+  digipot_resync_hours: "6"
+
+esphome:
+  on_boot:
+    priority: 600
+    then:
+      - script.execute:
+          id: dp_apply
+          temp: ${digipot_fallback_temp}
+          resync: true
+
+output:
+  # CS is inverted: "off" = pin high = chip deselected (also the power-on state).
+  - platform: gpio
+    id: dp_cs
+    pin:
+      number: ${digipot_cs_pin}
+      inverted: true
+  - platform: gpio
+    id: dp_inc
+    pin: ${digipot_inc_pin}
+  - platform: gpio
+    id: dp_ud
+    pin: ${digipot_ud_pin}
+
+globals:
+  - id: dp_pos
+    type: int
+    initial_value: "-1"
+  - id: dp_last_temp
+    type: float
+    initial_value: ${digipot_fallback_temp}
+  - id: dp_last_update_ms
+    type: uint32_t
+    initial_value: "0"
+  - id: dp_fallback_active
+    type: bool
+    initial_value: "false"
+
+script:
+  # Moves the wiper to an absolute position (0..99). With resync=true or an
+  # unknown position it first drives 100 steps down to the end stop.
+  - id: dp_move
+    mode: queued
+    parameters:
+      target: int
+      resync: bool
+    then:
+      - lambda: |-
+          const int STEPS = 99;
+          if (target < 0) target = 0;
+          if (target > STEPS) target = STEPS;
+
+          auto pulses = [&](bool up, int n) {
+            if (n <= 0) return;
+            bool ud_level = up ? ${digipot_up_is_high} : !${digipot_up_is_high};
+            if (ud_level) id(dp_ud).turn_on(); else id(dp_ud).turn_off();
+            delayMicroseconds(5);
+            id(dp_cs).turn_on();             // CS low (INC is low: idle)
+            delayMicroseconds(5);
+            for (int i = 0; i < n; i++) {
+              id(dp_inc).turn_on();          // INC high
+              delayMicroseconds(5);
+              id(dp_inc).turn_off();         // INC falling edge = one step
+              delayMicroseconds(5);
+            }
+            delayMicroseconds(5);
+            id(dp_cs).turn_off();            // CS high while INC low = no NVM store
+            delayMicroseconds(5);
+          };
+
+          id(dp_inc).turn_off();
+          id(dp_cs).turn_off();
+          if (resync || id(dp_pos) < 0) {
+            pulses(false, STEPS + 1);        // hit the VL end stop for sure
+            id(dp_pos) = 0;
+          }
+          int diff = target - id(dp_pos);
+          pulses(diff > 0, diff > 0 ? diff : -diff);
+          id(dp_pos) = target;
+          ESP_LOGI("digipot", "wiper position %d", id(dp_pos));
+
+  # Converts a temperature into the 12k NTC resistance (table from the service
+  # data, 1 degC points, linear interpolation), picks the nearest wiper step.
+  - id: dp_apply
+    mode: queued
+    parameters:
+      temp: float
+      resync: bool
+    then:
+      - lambda: |-
+          // 12k NTC, resistance in ohm for -5 .. 60 degC
+          static const float RT[] = {
+            52831, 50018, 47373, 44886, 42546, 40345, 38272, 36319, 34479, 32745,
+            31109, 29566, 28110, 26735, 25437, 24209, 23050, 21953, 20916, 19934,
+            19005, 18125, 17291, 16501, 15752, 15042, 14369, 13730, 13123, 12547,
+            12000, 11480, 10986, 10516, 10070, 9645, 9240, 8855, 8489, 8139,
+            7807, 7490, 7187, 6899, 6624, 6362, 6111, 5872, 5644, 5426,
+            5218, 5019, 4828, 4646, 4472, 4306, 4146, 3994, 3848, 3708,
+            3574, 3446, 3323, 3205, 3092, 2983
+          };
+          const int T_MIN = -5;
+          const int N = sizeof(RT) / sizeof(RT[0]);
+          const float R_TOTAL = ${digipot_r_total};
+          const float R_WIPER = ${digipot_r_wiper};
+          const int STEPS = 99;
+          const float R_STEP = R_TOTAL / STEPS;
+
+          float t = temp;
+          float r;
+          if (t <= T_MIN) {
+            r = RT[0];
+          } else if (t >= T_MIN + N - 1) {
+            r = RT[N - 1];
+          } else {
+            int i = (int) floorf(t - T_MIN);
+            float f = (t - T_MIN) - i;
+            r = RT[i] + (RT[i + 1] - RT[i]) * f;
+          }
+
+          int target = (int) lroundf(STEPS - (r - R_WIPER) / R_STEP);
+          if (target < 0) target = 0;
+          if (target > STEPS) target = STEPS;
+
+          id(dp_last_temp) = temp;
+          id(dp_move).execute(target, resync);
+
+          // Diagnostics: what the AC actually sees after quantisation.
+          float r_act = R_WIPER + (STEPS - target) * R_STEP;
+          float t_act;
+          if (r_act >= RT[0]) {
+            t_act = T_MIN;
+          } else if (r_act <= RT[N - 1]) {
+            t_act = T_MIN + N - 1;
+          } else {
+            int j = 0;
+            while (j < N - 2 && RT[j + 1] > r_act) j++;
+            t_act = T_MIN + j + (RT[j] - r_act) / (RT[j] - RT[j + 1]);
+          }
+          id(dp_pos_sensor).publish_state(target);
+          id(dp_resistance_sensor).publish_state(r_act);
+          id(dp_emulated_temp_sensor).publish_state(t_act);
+
+sensor:
+  - platform: homeassistant
+    id: dp_source_temp
+    entity_id: ${room_temperature_sensor}
+    internal: true
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return !std::isnan(x);'
+            then:
+              - lambda: |-
+                  id(dp_fallback_active) = false;
+                  id(dp_last_update_ms) = millis();
+              - script.execute:
+                  id: dp_apply
+                  temp: !lambda 'return x;'
+                  resync: false
+  - platform: template
+    id: dp_pos_sensor
+    name: Digipot Position
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: template
+    id: dp_resistance_sensor
+    name: Digipot Resistance
+    unit_of_measurement: "Ω"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: template
+    id: dp_emulated_temp_sensor
+    name: Digipot Emulated Temperature
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+    entity_category: diagnostic
+
+interval:
+  # Source sensor silent for too long (HA down, Zigbee sensor dead): fall back
+  # to "cold" so the AC keeps heating instead of freezing the room.
+  - interval: 1min
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(dp_fallback_active) && (millis() - id(dp_last_update_ms)) > (uint32_t) ${digipot_sensor_timeout_min} * 60000UL;'
+          then:
+            - lambda: 'id(dp_fallback_active) = true;'
+            - script.execute:
+                id: dp_apply
+                temp: ${digipot_fallback_temp}
+                resync: false
+  # Periodic re-reference against the end stop in case a step was ever lost.
+  - interval: ${digipot_resync_hours}h
+    then:
+      - script.execute:
+          id: dp_apply
+          temp: !lambda 'return id(dp_last_temp);'
+          resync: true
+
+number:
+  # Bench tool: set a raw wiper position and measure VW..VH with a multimeter.
+  # The next temperature update from the source sensor overrides it again.
+  - platform: template
+    name: Digipot Test Position
+    id: dp_test_position
+    min_value: 0
+    max_value: 99
+    step: 1
+    optimistic: true
+    entity_category: config
+    set_action:
+      - script.execute:
+          id: dp_move
+          target: !lambda 'return (int) x;'
+          resync: false
+
+button:
+  - platform: template
+    name: Digipot Resync
+    icon: mdi:sync
+    entity_category: config
+    on_press:
+      - script.execute:
+          id: dp_apply
+          temp: !lambda 'return id(dp_last_temp);'
+          resync: true
